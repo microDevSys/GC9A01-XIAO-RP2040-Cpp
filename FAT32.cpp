@@ -12,15 +12,17 @@
 /*******************************************************
  * Nom du fichier : FAT32.cpp
  * Auteur         : Guillaume Sahuc
- * Date           : 13 novembre 2025
+ * Date           : 23 novembre 2025
  * Description    : driver FAT32
  *******************************************************/
 
+ namespace FAT_Utils {
+
 // Positions des caractères LFN
-namespace FAT_Utils {
-    constexpr uint8_t LFN_CHAR_POSITIONS[13] = {
+constexpr uint8_t LFN_CHAR_POSITIONS[13] = {
         1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30
-    };
+};
+
 }
 
 FAT32::FAT32(SDCard* sd) 
@@ -194,13 +196,9 @@ void FAT32::view_fat_infos() {
 
 void FAT32::view_global_fat_variables() {
     printf("=== Variables FAT Calculées ===\n");
-    printf("FAT_Cluster_Size = %d\n", cluster_size);
-    printf("FAT_Sector_Size = %d\n", sector_size);
     printf("FAT_FAT_BASE = %d\n", fat_base);
-    printf("FAT_Root_BASE = %d (FAT32 utilise RootCluster=%lu)\n", root_base, (unsigned long)root_dir_first_cluster);
     printf("FAT_Data_BASE = %d\n", data_base);
     printf("SectorsInPartition = %ld\n", sectors_in_partition);
-    printf("SectorsPerFAT = %ld\n", sectors_per_fat);
     printf("FirstDataSector = %lu\n", (unsigned long)first_data_sector);
     printf("Last_Cluster = %d\n", last_cluster);
 }
@@ -221,7 +219,7 @@ FAT_ErrorCode FAT32::list_directory(std::vector<FileListEntry>& file_list) {
     saved_lfn[0] = '\0';
     bool done = false; // allow early exit when end-of-directory marker is found
     
-    printf("=== Liste des fichiers (mode avancé avec LFN) ===\n");
+    // printf("=== Liste des fichiers (mode avancé avec LFN) ===\n");
     file_list.clear();
     // Small capacity hint to reduce early reallocations; grows as needed
     file_list.reserve(62);
@@ -322,23 +320,7 @@ FAT_ErrorCode FAT32::list_directory(std::vector<FileListEntry>& file_list) {
         }
     }
     
-    // Afficher la liste
-    printf("Fichiers trouvés (%zu entrées):\n", file_list.size());
-    for (const auto& entry : file_list) {
-        if (entry.hasLongName && strlen(entry.longFileName) > 0) {
-            printf("  %s", entry.longFileName);
-        } else {
-            // Print full DOS 8.3 string; buffer is sized to include null terminator
-            printf("  %s", entry.dosFileName);
-        }
-        
-        if (entry.type == _Directory) {
-            printf("  <DIR>");
-        } else {
-            printf("  %lu bytes", entry.size);
-        }
-        printf("\n");
-    }
+    // Affichage de la liste supprimé pour éviter le double affichage
     
     return error_code;
 }
@@ -352,11 +334,9 @@ FileEntryType FAT32::fat_filename_parser(root_Entries* dir_entry, char* filename
     filename_out[0] = '\0';
     
     if (dir_entry->FileName[0] != FAT_Config::FILE_CLEAR) {
+        // Ignorer les entrées effacées et les labels de volume
         if ((dir_entry->FileName[0] != FAT_Config::FILE_ERASED) &&
-            ((dir_entry->Attributes == FAT_Config::AT_ARCHIVE) ||
-             (dir_entry->Attributes == FAT_Config::AT_DIRECTORY) ||
-             (dir_entry->Attributes == FAT_Config::AT_READONLY) ||
-             (dir_entry->Attributes == FAT_Config::AT_LFN))) {
+            !(dir_entry->Attributes & FAT_Config::AT_VOLUME_ID)) {
             
             if (dir_entry->Attributes == FAT_Config::AT_LFN) {
                 // Entrée Long File Name 
@@ -397,7 +377,8 @@ FileEntryType FAT32::fat_filename_parser(root_Entries* dir_entry, char* filename
                     filename_out[i] = dir_entry->FileName[i];
                 }
                 
-                if (dir_entry->Attributes == FAT_Config::AT_DIRECTORY) {
+                // Vérifier si c'est un répertoire (peut avoir d'autres attributs en plus)
+                if (dir_entry->Attributes & FAT_Config::AT_DIRECTORY) {
                     filename_out[i++] = '\\';
                     filename_out[i] = '\0';
                     return _Directory;
@@ -1359,7 +1340,9 @@ bool FAT32::change_directory(const char* dir_name) {
 }
 
 bool FAT32::rename_file(const char* old_name, const char* new_name) {
-    if (!initialized || !old_name || !new_name) return false;
+    if (!initialized || !old_name || !new_name) {
+        return false;
+    }
     // Extract basenames
     auto basename = [](const char* path) -> const char* {
         const char* slash = strrchr(path, '/');
@@ -1370,11 +1353,15 @@ bool FAT32::rename_file(const char* old_name, const char* new_name) {
 
     // Convert new name to 8.3
     char dos11_new[11];
-    if (!FAT_Utils::to_dos_8_3(new_base, dos11_new)) return false;
+    if (!FAT_Utils::to_dos_8_3(new_base, dos11_new)) {
+        return false;
+    }
 
     // Open old file to locate its directory sector
     FAT_ErrorCode fr = file_open(old_name, MODIFY);
-    if (fr != FILE_FOUND && fr != FILE_CREATE_OK) return false;
+    if (fr != FILE_FOUND && fr != FILE_CREATE_OK) {
+        return false;
+    }
 
     uint32_t dir_lba = write_handler.Dir_Entry;
     if (dir_lba == 0) return false;
@@ -1382,15 +1369,18 @@ bool FAT32::rename_file(const char* old_name, const char* new_name) {
     root_Entries* entries = (root_Entries*)read_buffer;
     const uint16_t ents = sector_size / sizeof(root_Entries);
 
-    // Ensure no collision with new name
+    // Ensure no collision with new name 
     for (uint16_t i = 0; i < ents; ++i) {
         root_Entries &e = entries[i];
         if (e.FileName[0] == FAT_Config::FILE_CLEAR) break;
         if (e.FileName[0] == FAT_Config::FILE_ERASED) continue;
         if (e.Attributes == FAT_Config::AT_LFN) continue;
+        
+        // Build current entry name
         char nm[13] = {0}; int k = 0;
         for (int c = 0; c < 8 && e.FileName[c] != ' '; ++c) nm[k++] = (char)e.FileName[c];
         if (e.Extension[0] != ' ') { nm[k++] = '.'; for (int c = 0; c < 3 && e.Extension[c] != ' '; ++c) nm[k++] = (char)e.Extension[c]; }
+        // Check for conflict with other files
         if (FAT_Utils::iequals(nm, new_base)) {
             // already exists
             return false;
@@ -1409,7 +1399,8 @@ bool FAT32::rename_file(const char* old_name, const char* new_name) {
         if (FAT_Utils::iequals(nm, old_base)) {
             memcpy(e.FileName, dos11_new, 8);
             memcpy(e.Extension, dos11_new + 8, 3);
-            return store_physical_block(dir_lba, (uint8_t*)entries);
+            bool success = store_physical_block(dir_lba, (uint8_t*)entries);
+            return success;
         }
     }
     return false;

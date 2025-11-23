@@ -5,7 +5,7 @@
 /*******************************************************
  * Nom du fichier : TFT.cpp
  * Auteur         : Guillaume Sahuc
- * Date           : 13 novembre 2025
+ * Date           : 23 novembre 2025
  * Description    : driver GC9A01 on spi0 RP2040
  *******************************************************/
 
@@ -19,7 +19,7 @@ static uint8_t g_tft_framebuffer[TFTConfig::FB_SIZE_BYTES] __attribute__((aligne
 // ===== CONSTRUCTEUR/DESTRUCTEUR =====
 TFT::TFT() : framebuffer(nullptr), dma_chan(-1), dma_irq(0), 
              dma_busy(false), fill_color(0x0000), scroll_x(0), scroll_y(0),
-             current_font(FontType::FONT_MINI), current_rotation(Rotation::PORTRAIT_0) {
+             current_font(FontType::FONT_STANDARD), current_rotation(Rotation::PORTRAIT_0) {
     updateScreenDimensions();
 }
 
@@ -143,7 +143,7 @@ void TFT::sendFrame() {
     // S'assurer que le bus SPI est à pleine vitesse pour le transfert d'image
     spi_set_baudrate(spi0, TFTConfig::SPI_BAUDRATE);
 
-    setWindow(0, 0, TFTConfig::WIDTH-1, TFTConfig::HEIGHT-1);
+    setWindow(0, 0, screen_width - 1, screen_height - 1);
     uint8_t cmd = 0x2C;
     writeCmd(&cmd, 1);
     
@@ -188,15 +188,15 @@ void TFT::clear() {
 }
 
 void TFT::setPixel(int x, int y, uint16_t color) {
-    transformCoordinates(x, y);
-    
+   
     int screen_x = x - scroll_x;
     int screen_y = y - scroll_y;
     
-    if (screen_x < 0 || screen_x >= TFTConfig::WIDTH || 
-        screen_y < 0 || screen_y >= TFTConfig::HEIGHT) return;
+    // Vérifier les limites selon les dimensions logiques de l'écran
+    if (screen_x < 0 || screen_x >= screen_width || 
+        screen_y < 0 || screen_y >= screen_height) return;
     
-    int pos = (screen_y * TFTConfig::WIDTH + screen_x) * 2;
+    int pos = (screen_y * screen_width + screen_x) * 2;
     framebuffer[pos] = (color >> 8) & 0xFF;
     framebuffer[pos + 1] = color & 0xFF;
 }
@@ -301,6 +301,7 @@ void TFT::drawSmallCircle(int xc, int yc, int r, uint16_t color) {
             if (x*x + y*y <= r*r) {
                 int px = xc + x;
                 int py = yc + y;
+                // Le framebuffer est toujours WIDTH x HEIGHT (320x480) physique
                 if (px >= 0 && px < TFTConfig::WIDTH && 
                     py >= 0 && py < TFTConfig::HEIGHT) {
                     int pos = (py * TFTConfig::WIDTH + px) * 2;
@@ -533,27 +534,6 @@ void TFT::updateScreenDimensions() {
     }
 }
 
-void TFT::transformCoordinates(int& x, int& y) const {
-    int orig_x = x, orig_y = y;
-    
-    switch (current_rotation) {
-        case Rotation::PORTRAIT_0:
-            break;
-        case Rotation::LANDSCAPE_90:
-            x = TFTConfig::WIDTH - 1 - orig_y;
-            y = orig_x;
-            break;
-        case Rotation::PORTRAIT_180:
-            x = TFTConfig::WIDTH - 1 - orig_x;
-            y = TFTConfig::HEIGHT - 1 - orig_y;
-            break;
-        case Rotation::LANDSCAPE_270:
-            x = orig_y;
-            y = TFTConfig::HEIGHT - 1 - orig_x;
-            break;
-    }
-}
-
 // ===== FONCTIONS SPÉCIALISÉES =====
 void TFT::drawBalls(const std::vector<Ball>& balls) {
     for (const auto& ball : balls) {
@@ -562,9 +542,10 @@ void TFT::drawBalls(const std::vector<Ball>& balls) {
 }
 
 void TFT::drawSecondsMarkers() {
-    int cx = TFTConfig::WIDTH / 2;
-    int cy = TFTConfig::HEIGHT / 2;
-    int r = (TFTConfig::WIDTH < TFTConfig::HEIGHT ? TFTConfig::WIDTH : TFTConfig::HEIGHT) / 2 - 10;
+    // Utiliser les dimensions logiques de l'écran (déjà calculées selon rotation)
+    int cx = screen_width / 2;
+    int cy = screen_height / 2;
+    int r = (screen_width < screen_height ? screen_width : screen_height) / 2 - 10;
     
     for (int i = 0; i < 60; i++) {
         float angle = (float)i * 2.0f * M_PI / 60.0f;
