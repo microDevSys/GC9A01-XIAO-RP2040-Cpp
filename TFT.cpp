@@ -494,11 +494,11 @@ void TFT::setRotation(Rotation rotation) {
     
     uint8_t madctl_value;
     switch (rotation) {
-        case Rotation::PORTRAIT_0:   madctl_value = 0xC8; break;
-        case Rotation::LANDSCAPE_90: madctl_value = 0xA8; break;
-        case Rotation::PORTRAIT_180: madctl_value = 0x28; break;
-        case Rotation::LANDSCAPE_270: madctl_value = 0x08; break;
-        default: madctl_value = 0xA8; break;
+        case Rotation::PORTRAIT_0:   madctl_value = 0x08; break;  // 0°
+        case Rotation::LANDSCAPE_90: madctl_value = 0x68; break;  // 90°
+        case Rotation::PORTRAIT_180: madctl_value = 0xC8; break;  // 180°
+        case Rotation::LANDSCAPE_270: madctl_value = 0xA8; break; // 270°
+        default: madctl_value = 0x08; break;
     }
     
     cmdWithData(0x36, &madctl_value, 1);

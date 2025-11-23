@@ -126,7 +126,7 @@ void SDCard::switch_to_normal_speed() {
 void SDCard::spi_cs_select() {
     // Garantir la bonne vitesse SPI côté SD avant chaque transaction
     // - Pendant l'init: vitesse lente (400 kHz)
-    // - Après init: vitesse normale (8 MHz)
+    // - Après init: vitesse normale (12 MHz)
     spi_set_baudrate(spi0, initialized ? SDCardConfig::SPI_BAUDRATE_NORMAL : SDCardConfig::SPI_BAUDRATE_INIT);
     gpio_put(SDCardConfig::PIN_CS, 0);
     sleep_us(10);
