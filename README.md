@@ -41,3 +41,5 @@ Après compilation, l'artefact principal est généré dans `build/` (ex. `main.
 ![Schéma de câblage pour GC9A01 ↔ Pico / XIAO RP2040](wiring.png)
 
 Figure : Câblage entre l'écran GC9A01 et la carte Pico / XIAO RP2040.
+
+exemple fonts size 32 for LCD = http://guillaume.sahuc.free.fr/fonts/
