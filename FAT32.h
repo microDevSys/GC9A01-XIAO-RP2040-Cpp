@@ -71,7 +71,8 @@ enum FAT_ErrorCode {
     FILE_CREATE_OK = 3,
     NO_FILE_ENTRY_AVAILABLE = 4,
     NO_FAT_ENTRY_AVAILABLE = 5,
-    NO_MORE_FREE_CLUSTER = 6
+    NO_MORE_FREE_CLUSTER = 6,
+    ERROR_READ_FAIL = 7
 };
 
 // Structure Boot Record inspirée du fat.c
@@ -163,22 +164,34 @@ struct WriteHandler {
 
 // Structure pour liste de fichiers (inspirée du fat.c)
 struct FileListEntry {
-    char longFileName[FAT_Config::MAX_LFN_CHARACTERS];
+    std::string longFileName;
     // Max DOS 8.3 name length is 8 + 1 (dot) + 3 = 12 characters.
     // Allocate 13 to include the null terminator and avoid truncating the last character (e.g., missing the last extension letter).
     char dosFileName[13];
     FileEntryType type;
     uint32_t size;
     bool hasLongName;
+    // Additional metadata
+    uint8_t attributes;
+    uint16_t creationTime;
+    uint16_t creationDate;
+    uint16_t modificationTime;
+    uint16_t modificationDate;
+    uint32_t firstCluster;
     
-    FileListEntry() : type(_Error), size(0), hasLongName(false) {
-        memset(longFileName, 0, sizeof(longFileName));
+    FileListEntry() : type(_Error), size(0), hasLongName(false), longFileName("") {
         memset(dosFileName, 0, sizeof(dosFileName));
+        attributes = 0;
+        creationTime = creationDate = modificationTime = modificationDate = 0;
+        firstCluster = 0;
     }
 };
 
 class FAT32 {
 private:
+    // Buffer for Long File Name (LFN) assembly, accessible by list_directory and fat_filename_parser
+    std::string lfn_buffer;
+    std::string fn_buffer;
     SDCard* sd_card;
     bool initialized;
     
@@ -227,7 +240,7 @@ private:
     uint32_t fat_entry(uint32_t fat_entry, uint32_t fat_value, bool write_entry);
     
     // Parsing de noms (inspiré du fat.c)
-    FileEntryType fat_filename_parser(root_Entries* dir_entry, char* filename_out);
+    FileEntryType fat_filename_parser(root_Entries* dir_entry);
     
     // Fonctions utilitaires pour file_close
     void update_directory_entry_size();
@@ -301,9 +314,7 @@ namespace FAT_Utils {
     // Détails d’implémentation internes déplacés dans FAT32.cpp
     // (la constante n’est pas utilisée en dehors, on évite donc l’exposition ici)
     
-    // Conversion de noms de fichiers
-    std::string long_name_to_dos_name(const char* long_name);
-    
+   
     // Validation de noms
     bool is_valid_filename(const char* filename);
     bool iequals(const char* a, const char* b);

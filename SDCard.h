@@ -38,11 +38,12 @@ enum SDCard_Command {
 
 // Configuration pour la carte SD
 struct SDCardConfig {
+// PIO-based SPI pins
     static constexpr int SPI_PORT = 0;
     static constexpr int PIN_SCK = 2;
     static constexpr int PIN_MOSI = 3;
     static constexpr int PIN_MISO = 4;
-    static constexpr int PIN_CS = 6;
+    static constexpr int PIN_CS = 6; 
     static constexpr int SPI_BAUDRATE_INIT = 400000;    // 400kHz pour init
     static constexpr int SPI_BAUDRATE_NORMAL = 12000000; // 12MHz pour opérations
     static constexpr int BLOCK_SIZE = 512;
@@ -56,9 +57,14 @@ struct SDCardConfig {
 
 // Structure pour les informations de fichier
 struct FileInfo {
-    char name[256];
+    std::string name;
     uint32_t size;
     bool is_directory;
+    // Additional metadata for listing
+    uint8_t attributes;
+    uint16_t modificationTime;
+    uint16_t modificationDate;
+    uint32_t firstCluster;
 };
 
 class SDCard {

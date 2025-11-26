@@ -82,8 +82,6 @@ public:
     // Gestion des animations
     // Charge une animation depuis un répertoire contenant des fichiers .raw triés (DirectoryFrames)
     bool load_animation(const char* directory_path, const char* name = nullptr);
-    // Version sécurisée avec limite explicite de fichiers
-    bool load_animation_safe(const char* directory_path, const char* name, size_t max_files);
     // Version ultra-économe : génère les noms à la volée (0 allocation de chemins)
     bool load_animation_generated(const char* directory_path, const char* name, size_t frame_count);
     // Version par blocs : charge l'animation complète par blocs séquentiels

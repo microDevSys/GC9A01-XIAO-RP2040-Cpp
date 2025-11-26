@@ -37,6 +37,7 @@ public:
     bool file_exists(const char* filename);
     uint32_t get_file_size(const char* filename);
     std::vector<FileInfo> list_directory(const char* path = nullptr);
+    bool rename_file(const char* old_name, const char* new_name);
 
     // Opérations BMP
     SDCard_Status read_bmp_file_info(const char* filename, t_bmp* bmp_info);

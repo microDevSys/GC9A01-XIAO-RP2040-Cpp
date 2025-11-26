@@ -15,12 +15,13 @@
 /*******************************************************
  * Nom du fichier : main.cpp
  * Auteur         : Guillaume Sahuc
- * Date           : 13 novembre 2025
+ * Date           : 26 novembre 2025
  * Description    : test global écran + carte SD + FAT32
  *                avec interface série interactive ( via USB)
- * Version        : 1.0
+ * Version        : 1.1
  * Modifications  :
  *   - 13/11/2025 : Version initiale (release version)
+ *   - 26/11/2025 : change FileInfo struct 
  *  
  * à utiliser à vos risques et périls. :)
  * nécessite des tests complémentaires pour validation complète.  
@@ -99,16 +100,49 @@ void process_command(const char* cmd, StorageManager* storage) {
         if (files.empty()) {
             printf("  (vide ou erreur)\n");
         } else {
+            printf("\nType    Taille        Date/Heure        Attr     Nom\n");
+            printf("----    ----------    ----------------- -------  ----\n");
             for (const auto& file : files) {
+                // Copier le nom et retirer le backslash final pour les répertoires
+                std::string clean_name = file.name;
+                if (!clean_name.empty() && clean_name.back() == '\\') {
+                    clean_name.pop_back();
+                }
+                // Attributes and datetime formatter
+                auto format_attr = [](uint8_t attr)->std::string {
+                    char buf[8] = "-------"; // R H S V D A -
+                    if (attr & FAT_Config::AT_READONLY) buf[0] = 'R';
+                    if (attr & FAT_Config::AT_HIDDEN)   buf[1] = 'H';
+                    if (attr & FAT_Config::AT_SYSTEM)   buf[2] = 'S';
+                    if (attr & FAT_Config::AT_VOLUME_ID)buf[3] = 'V';
+                    if (attr & FAT_Config::AT_DIRECTORY) buf[4] = 'D';
+                    if (attr & FAT_Config::AT_ARCHIVE)   buf[5] = 'A';
+                    return std::string(buf);
+                };
+
+                auto format_fat_datetime = [](uint16_t date, uint16_t time) -> std::string {
+                    if (date == 0 && time == 0) return std::string("----/--/-- --:--");
+                    uint16_t day = date & 0x1F;
+                    uint16_t month = (date >> 5) & 0x0F;
+                    uint16_t year = ((date >> 9) & 0x7F) + 1980;
+                    uint16_t minutes = (time >> 5) & 0x3F;
+                    uint16_t hours = (time >> 11) & 0x1F;
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%04u/%02u/%02u %02u:%02u", (unsigned)year, (unsigned)month, (unsigned)day, (unsigned)hours, (unsigned)minutes);
+                    return std::string(buf);
+                };
+
+                const std::string attr_s = format_attr(file.attributes);
+                const std::string dt_s = format_fat_datetime(file.modificationDate, file.modificationTime);
+
                 if (file.is_directory) {
-                    printf("  %-30s  <DIR>\n", file.name);
+                    printf("DIR     %-12s  %s  %s  %s\n", "-", dt_s.c_str(), attr_s.c_str(), clean_name.c_str());
                 } else {
-                    float size_kb = (float)file.size / 1024.0f;
-                    printf("  %-30s  %8.2f Ko\n", file.name, size_kb);
+                    printf("FILE    %-12u  %s  %s  %s\n", file.size, dt_s.c_str(), attr_s.c_str(), clean_name.c_str());
                 }
             }
         }
-        printf("=== Fin du listing ===\n");
+        printf("=== %zu entrée(s) trouvée(s) ===\n", files.size());
     }
     
     // === BMP ===

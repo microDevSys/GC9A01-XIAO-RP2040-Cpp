@@ -9,7 +9,7 @@
 /*******************************************************
  * Nom du fichier : StorageManager.cpp
  * Auteur         : Guillaume Sahuc
- * Date           : 13 novembre 2025
+ * Date           : 26 novembre 2025
  * Description    : driver haut niveau FAT32
  *******************************************************/
 
@@ -60,6 +60,19 @@ bool StorageManager::mount_fat32() {
     fat32_fs = nullptr;
     fat32_mounted = false;
     return false;
+}
+
+// ============================================================================
+// RENOMMER UN FICHIER
+// ============================================================================
+
+bool StorageManager::rename_file(const char* old_name, const char* new_name) {
+    if (!fat32_mounted || !fat32_fs) {
+        printf("[ERREUR] FAT32 non monté\n");
+        return false;
+    }
+    
+    return fat32_fs->rename_file(old_name, new_name);
 }
 
 // ============================================================================
@@ -218,20 +231,19 @@ std::vector<FileInfo> StorageManager::list_directory(const char* path) {
     // Convertir les entrées FAT32 vers notre structure FileInfo
     for (const auto& fat_file : fat_files) {
         FileInfo info;
-        
         // Utiliser le nom long si disponible, sinon le nom DOS
-        if (fat_file.hasLongName && strlen(fat_file.longFileName) > 0) {
-            strncpy(info.name, fat_file.longFileName, sizeof(info.name) - 1);
-            info.name[sizeof(info.name) - 1] = '\0';
+        if (fat_file.hasLongName && !fat_file.longFileName.empty()) {
+            info.name = fat_file.longFileName;
         } else {
-            // Copy full DOS 8.3 string (up to 12 chars) and ensure null termination
-            strncpy(info.name, fat_file.dosFileName, sizeof(info.name) - 1);
-            info.name[sizeof(info.name) - 1] = '\0';
+            info.name = fat_file.dosFileName;
         }
-        
         info.size = fat_file.size;
         info.is_directory = (fat_file.type == _Directory);
-        
+        // Propagate metadata
+        info.attributes = fat_file.attributes;
+        info.modificationTime = fat_file.modificationTime;
+        info.modificationDate = fat_file.modificationDate;
+        info.firstCluster = fat_file.firstCluster;
         result.push_back(info);
     }
     
@@ -617,24 +629,50 @@ SDCard_Status StorageManager::list_directory_advanced() {
         
         printf("\n--- Entrée %zu ---\n", i + 1);
         
-        if (entry.hasLongName && strlen(entry.longFileName) > 0) {
-            printf("Nom long: %s\n", entry.longFileName);
+        if (entry.hasLongName && !entry.longFileName.empty()) {
+            printf("Nom long: %s\n", entry.longFileName.c_str());
             printf("Nom DOS:  %s\n", entry.dosFileName);
         } else {
             printf("Nom DOS:  %s\n", entry.dosFileName);
         }
         
+        // Attributes display helper
+        char attr_buf[8] = "-------"; // R H S V D A -
+        if (entry.attributes & FAT_Config::AT_READONLY) attr_buf[0] = 'R';
+        if (entry.attributes & FAT_Config::AT_HIDDEN)   attr_buf[1] = 'H';
+        if (entry.attributes & FAT_Config::AT_SYSTEM)   attr_buf[2] = 'S';
+        if (entry.attributes & FAT_Config::AT_VOLUME_ID)attr_buf[3] = 'V';
+        if (entry.attributes & FAT_Config::AT_DIRECTORY) attr_buf[4] = 'D';
+        if (entry.attributes & FAT_Config::AT_ARCHIVE)   attr_buf[5] = 'A';
+
+        // Format FAT date/time
+        auto format_fat_datetime = [](uint16_t date, uint16_t time) -> std::string {
+            if (date == 0 && time == 0) return std::string("----/--/-- --:--:--");
+            uint16_t day = date & 0x1F;
+            uint16_t month = (date >> 5) & 0x0F;
+            uint16_t year = ((date >> 9) & 0x7F) + 1980;
+            uint16_t seconds = (time & 0x1F) * 2;
+            uint16_t minutes = (time >> 5) & 0x3F;
+            uint16_t hours = (time >> 11) & 0x1F;
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%04u/%02u/%02u %02u:%02u:%02u", (unsigned)year, (unsigned)month, (unsigned)day, (unsigned)hours, (unsigned)minutes, (unsigned)seconds);
+            return std::string(buf);
+        };
+
         switch (entry.type) {
             case _File:
-                printf("Type:     Fichier\n");
-                printf("Taille:   %lu bytes (%.2f KB)\n", 
-                       entry.size, (float)entry.size / 1024.0f);
+                  printf("Type:     Fichier\n");
+                  printf("Taille:   %lu bytes (%.2f KB)\n", entry.size, (float)entry.size / 1024.0f);
+                  printf("Attributs: %s  Cluster: %lu\n", attr_buf, (unsigned long)entry.firstCluster);
+                  printf("Modifié:  %s\n", format_fat_datetime(entry.modificationDate, entry.modificationTime).c_str());
                 file_count++;
                 total_size += entry.size;
                 break;
                 
             case _Directory:
                 printf("Type:     Répertoire\n");
+                printf("Attributs: %s  Cluster: %lu\n", attr_buf, (unsigned long)entry.firstCluster);
+                printf("Modifié:  %s\n", format_fat_datetime(entry.modificationDate, entry.modificationTime).c_str());
                 dir_count++;
                 break;
                 
@@ -749,7 +787,7 @@ SDCard_Status StorageManager::run_fat32_test() {
                                "- Ligne 1: Test d'écriture\n"
                                "- Ligne 2: Système FAT32 opérationnel\n"
                                "- Ligne 3: Support LFN activé\n"
-                               "- Ligne 4: Pico SDK + RP2040\n"
+                               "- Ligne 4: Pico SDK + RPiPico\n"
                                "\n"
                                "Fin du fichier de test.\n";
     

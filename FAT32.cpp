@@ -12,17 +12,15 @@
 /*******************************************************
  * Nom du fichier : FAT32.cpp
  * Auteur         : Guillaume Sahuc
- * Date           : 23 novembre 2025
+ * Date           : 25 novembre 2025
  * Description    : driver FAT32
  *******************************************************/
 
- namespace FAT_Utils {
-
 // Positions des caractères LFN
-constexpr uint8_t LFN_CHAR_POSITIONS[13] = {
+namespace FAT_Utils {
+    constexpr uint8_t LFN_CHAR_POSITIONS[13] = {
         1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30
-};
-
+    };
 }
 
 FAT32::FAT32(SDCard* sd) 
@@ -196,208 +194,148 @@ void FAT32::view_fat_infos() {
 
 void FAT32::view_global_fat_variables() {
     printf("=== Variables FAT Calculées ===\n");
+    printf("FAT_Cluster_Size = %d\n", cluster_size);
+    printf("FAT_Sector_Size = %d\n", sector_size);
     printf("FAT_FAT_BASE = %d\n", fat_base);
+    printf("FAT_Root_BASE = %d (FAT32 utilise RootCluster=%lu)\n", root_base, (unsigned long)root_dir_first_cluster);
     printf("FAT_Data_BASE = %d\n", data_base);
     printf("SectorsInPartition = %ld\n", sectors_in_partition);
+    printf("SectorsPerFAT = %ld\n", sectors_per_fat);
     printf("FirstDataSector = %lu\n", (unsigned long)first_data_sector);
     printf("Last_Cluster = %d\n", last_cluster);
 }
 
-// (avec support LFN)
+
 FAT_ErrorCode FAT32::list_directory(std::vector<FileListEntry>& file_list) {
-    uint16_t index;
+    file_list.clear();
+    file_list.reserve(32);
+
     uint32_t cluster = current_dir_cluster_ ? current_dir_cluster_ : root_dir_first_cluster;
     FAT_ErrorCode error_code = ERROR_IDLE;
-    root_Entries* file_structure;
-    FileEntryType type;
-    bool lfn_flag = false;
-    // Utiliser un buffer dynamique pour éviter un gros tableau sur la pile
-    std::vector<char> filename_buf;
-    filename_buf.resize(FAT_Config::MAX_LFN_CHARACTERS);
-    // Buffer pour sauvegarder le LFN avant que filename_buf soit écrasé par le nom DOS
-    char saved_lfn[FAT_Config::MAX_LFN_CHARACTERS];
-    saved_lfn[0] = '\0';
-    bool done = false; // allow early exit when end-of-directory marker is found
-    
-    // printf("=== Liste des fichiers (mode avancé avec LFN) ===\n");
-    file_list.clear();
-    // Small capacity hint to reduce early reallocations; grows as needed
-    file_list.reserve(62);
-    
-    while (cluster < FAT32_Cluster::EOC_MIN && error_code == ERROR_IDLE && !done) {
+    bool end_of_dir = false;
+    bool LfnFlag = false;
+
+    while (cluster < FAT32_Cluster::EOC_MIN && !end_of_dir && error_code == ERROR_IDLE) {
         for (uint16_t sec = 0; sec < cluster_size; ++sec) {
             uint32_t lba = data_base + ((cluster - 2) * cluster_size) + sec;
             if (!get_physical_block(lba, read_buffer)) {
                 printf("Erreur lecture secteur %lu\n", (unsigned long)lba);
-                return error_code;
+                return ERROR_READ_FAIL;
             }
-
-            file_structure = (root_Entries*)read_buffer;
-            index = 0;
+            root_Entries* entries = reinterpret_cast<root_Entries*>(read_buffer);
             const uint16_t entries_per_sector = sector_size / sizeof(root_Entries);
-
-            while (index < entries_per_sector && error_code == ERROR_IDLE) {
-                // Early end-of-directory marker: no valid entries follow in this directory
-                if (file_structure->FileName[0] == FAT_Config::FILE_CLEAR) {
-                    done = true;
+            for (uint16_t i = 0; i < entries_per_sector && error_code == ERROR_IDLE; ++i) {
+                auto& entry = entries[i];
+                if (entry.FileName[0] == FAT_Config::FILE_CLEAR) {
+                    end_of_dir = true;
                     break;
                 }
-                type = fat_filename_parser(file_structure, filename_buf.data());
-
+                FileEntryType type = fat_filename_parser(&entry);
                 switch (type) {
-                case _File:
-                    {
-                        FileListEntry entry;
-                        // Toujours copier le nom DOS (c'est ce qui est dans filename_buf pour _File)
-                        strncpy(entry.dosFileName, filename_buf.data(), sizeof(entry.dosFileName) - 1);
-                        entry.dosFileName[sizeof(entry.dosFileName) - 1] = '\0';
-                        
-                        if (lfn_flag && saved_lfn[0] != '\0') {
-                            // On avait un LFN précédent sauvegardé, le copier
-                            strncpy(entry.longFileName, saved_lfn, sizeof(entry.longFileName) - 1);
-                            entry.longFileName[sizeof(entry.longFileName) - 1] = '\0';
-                            entry.hasLongName = true;
-                            lfn_flag = false;
-                            saved_lfn[0] = '\0'; // reset
+                    case _File:
+                    case _Directory: {
+                        FileListEntry file_entry;
+                        if (LfnFlag) {
+                            file_entry.longFileName = lfn_buffer;
+                            file_entry.hasLongName = true;
+                            lfn_buffer.clear();
                         } else {
-                            entry.hasLongName = false;
-                            entry.longFileName[0] = '\0';
+                            strncpy(file_entry.dosFileName, fn_buffer.c_str(), sizeof(file_entry.dosFileName)-1);
+                            file_entry.dosFileName[sizeof(file_entry.dosFileName)-1] = '\0';
+                            file_entry.hasLongName = false;
                         }
-                        entry.type = _File;
-                        entry.size = file_structure->SizeofFile;
-                        file_list.push_back(entry);
+                        file_entry.type = type;
+                        file_entry.size = (type == _File) ? entry.SizeofFile : 0;
+                        // Fill additional metadata for advanced listings
+                        file_entry.attributes = entry.Attributes;
+                        file_entry.creationTime = entry.CreationTime;
+                        file_entry.creationDate = entry.CreationDate;
+                        file_entry.modificationTime = entry.ModificationTime;
+                        file_entry.modificationDate = entry.ModificationDate;
+                        file_entry.firstCluster = ((uint32_t)entry.FirstClusterHigh << 16) | (uint32_t)entry.FirstClusterNumber;
+                        file_list.push_back(file_entry);
+                        LfnFlag = false;
+                        break;
                     }
-                    break;
-                    
-                case _Directory:
-                    {
-                        FileListEntry entry;
-                        // Toujours copier le nom DOS
-                        strncpy(entry.dosFileName, filename_buf.data(), sizeof(entry.dosFileName) - 1);
-                        entry.dosFileName[sizeof(entry.dosFileName) - 1] = '\0';
-                        
-                        if (lfn_flag && saved_lfn[0] != '\0') {
-                            strncpy(entry.longFileName, saved_lfn, sizeof(entry.longFileName) - 1);
-                            entry.longFileName[sizeof(entry.longFileName) - 1] = '\0';
-                            entry.hasLongName = true;
-                            lfn_flag = false;
-                            saved_lfn[0] = '\0'; // reset
-                        } else {
-                            entry.hasLongName = false;
-                            entry.longFileName[0] = '\0';
-                        }
-                        entry.type = _Directory;
-                        entry.size = 0; // Les dossiers n'ont pas de taille
-                        file_list.push_back(entry);
-                    }
-                    break;
-                    
-                case _LongFileNameOK:
-                    // Nom long complet reçu - le sauvegarder avant qu'il soit écrasé
-                    strncpy(saved_lfn, filename_buf.data(), sizeof(saved_lfn) - 1);
-                    saved_lfn[sizeof(saved_lfn) - 1] = '\0';
-                    lfn_flag = true;
-                    break;
-                    
-                case _LongFileNameNOK:
-                    // Nom long incomplet, continuer
-                    break;
-                    
-                case _Error:
-                default:
-                    // Ignorer les entrées invalides
-                    break;
-                }
-                index++;
-                file_structure++;
-            }
-            if (done) break; // stop scanning further sectors in this directory
+                    case _LongFileNameOK:
+                        LfnFlag = true;
+                        break;
+                    case _LongFileNameNOK:
+                    case _Error:
+                        // ignorer
+                        break;
+                                }
+                            }
         }
-        if (!done) {
-            uint32_t next = fat_entry(cluster, 0, false);
-            if (next >= FAT32_Cluster::EOC_MIN || next == 0) break;
-            cluster = next;
+        if (!end_of_dir) {
+            uint32_t next_cluster = fat_entry(cluster, 0, false);
+            if (next_cluster >= FAT32_Cluster::EOC_MIN || next_cluster == 0) break;
+            cluster = next_cluster;
         }
     }
-    
-    // Affichage de la liste supprimé pour éviter le double affichage
-    
     return error_code;
 }
 
-FileEntryType FAT32::fat_filename_parser(root_Entries* dir_entry, char* filename_out) {
-    uint8_t i = 0, j = 0;
-    DIR_ENT_LFN* lfn_entry = (DIR_ENT_LFN*)dir_entry;
-    uint8_t* dir_bytes = (uint8_t*)dir_entry;
-    static uint8_t lfn_index = 0;
-    
-    filename_out[0] = '\0';
-    
-    if (dir_entry->FileName[0] != FAT_Config::FILE_CLEAR) {
-        // Ignorer les entrées effacées et les labels de volume
-        if ((dir_entry->FileName[0] != FAT_Config::FILE_ERASED) &&
-            !(dir_entry->Attributes & FAT_Config::AT_VOLUME_ID)) {
-            
-            if (dir_entry->Attributes == FAT_Config::AT_LFN) {
-                // Entrée Long File Name 
-                if (lfn_entry->Ordinal > 0x40) {
-                    lfn_index = ((lfn_entry->Ordinal - 0x41) * 13);
-                    filename_out[lfn_index + 13] = '\0';
-                } else {
-                    lfn_index -= 13;
-                }
-                
-                // Extraire les caractères aux bonnes positions (UTF-16LE -> ASCII basique)
-                // Arrêt sur 0x0000 (fin de chaîne) ou 0xFFFF (padding)
-                for (i = 0; i <= 12; i++) {
-                    uint8_t pos = FAT_Utils::LFN_CHAR_POSITIONS[i];
-                    uint8_t lo = dir_bytes[pos];
-                    uint8_t hi = dir_bytes[pos + 1];
-                    // Fin de chaîne explicite
-                    if (lo == 0x00 && hi == 0x00) {
-                        filename_out[lfn_index + i] = '\0';
-                        break;
-                    }
-                    // Zone de padding non utilisée
-                    if (lo == 0xFF && hi == 0xFF) {
-                        break;
-                    }
-                    // Copie du LSB ASCII (les caractères non-ASCII seront dégradés)
-                    filename_out[lfn_index + i] = lo;
-                }
-                
-                if (lfn_index != 0) {
-                    return _LongFileNameNOK; // Nom pas complet
-                } else {
-                    return _LongFileNameOK;  // Nom complet
-                }
-            } else {
-                // Entrée 8.3 standard 
-                for (i = 0; (i < 8) && (dir_entry->FileName[i] != 0x20); i++) {
-                    filename_out[i] = dir_entry->FileName[i];
-                }
-                
-                // Vérifier si c'est un répertoire (peut avoir d'autres attributs en plus)
-                if (dir_entry->Attributes & FAT_Config::AT_DIRECTORY) {
-                    filename_out[i++] = '\\';
-                    filename_out[i] = '\0';
-                    return _Directory;
-                } else {
-                    filename_out[i++] = '.';
-                    for (j = 0; j < 3; j++) {
-                        filename_out[i++] = dir_entry->Extension[j];
-                    }
-                    filename_out[i] = '\0';
-                    return _File;
-                }
-            }
+
+FileEntryType FAT32::fat_filename_parser(root_Entries* dir_entry) {
+    // Keep LFN buffer across calls; only clear it when a new LFN sequence starts.
+    fn_buffer.clear();
+    if (dir_entry->FileName[0] == FAT_Config::FILE_CLEAR) return _Error; // end of directory marker
+    if (dir_entry->FileName[0] == FAT_Config::FILE_ERASED) return _Error; // erased
+    // LFN entries mark attributes with 0x0F exactly, but we use a mask to be robust
+    if ((dir_entry->Attributes & FAT_Config::AT_LFN) == FAT_Config::AT_LFN) {
+        DIR_ENT_LFN* lfn_entry = (DIR_ENT_LFN*)dir_entry;
+        uint8_t ordinal_field = lfn_entry->Ordinal;
+        const bool is_last = (ordinal_field & 0x40) != 0;
+        const uint8_t ordinal = ordinal_field & 0x3F; // total fragments count
+        if (ordinal == 0) return _LongFileNameNOK;
+        if (is_last) {
+            // Reserve space for full name: ordinal * 13 (max chars per fragment)
+            lfn_buffer.clear();
+            lfn_buffer.resize((size_t)ordinal * 13 + 1, '\0');
         }
+        size_t base_index = (size_t)(ordinal - 1) * 13u;
+        if (base_index + 13 + 1 > lfn_buffer.size()) lfn_buffer.resize(base_index + 13 + 1, '\0');
+
+        uint16_t utf16[13];
+        for (int i = 0; i < 5; ++i) utf16[i] = lfn_entry->Name1[i];
+        for (int i = 0; i < 6; ++i) utf16[5 + i] = lfn_entry->Name2[i];
+        for (int i = 0; i < 2; ++i) utf16[11 + i] = lfn_entry->Name3[i];
+
+        for (int i = 0; i < 13; ++i) {
+            uint16_t ch = utf16[i];
+            if (ch == 0x0000 || ch == 0xFFFF) {
+                lfn_buffer[base_index + i] = '\0';
+                break;
+            }
+            // Basic ASCII fallback: low byte
+            char outc = (char)(ch & 0xFF);
+            if ((unsigned char)outc < 0x20 && outc != '\t') outc = '?';
+            lfn_buffer[base_index + i] = outc;
+        }
+
+        if (ordinal == 1) {
+            // Final fragment assembled
+            size_t pos = lfn_buffer.find('\0');
+            if (pos != std::string::npos) lfn_buffer.resize(pos);
+            return _LongFileNameOK;
+        }
+        return _LongFileNameNOK;
     }
-    
-    return _Error;
+
+    // Short name (8.3) parsing
+    for (int i = 0; i < 8 && dir_entry->FileName[i] != ' '; ++i) fn_buffer += (char)dir_entry->FileName[i];
+    if (dir_entry->Attributes & FAT_Config::AT_DIRECTORY) {
+        fn_buffer += '\\';
+        return _Directory;
+    }
+    // File: add extension only if present
+    if (dir_entry->Extension[0] != ' ') {
+        fn_buffer += '.';
+        for (int j = 0; j < 3 && dir_entry->Extension[j] != ' '; ++j) fn_buffer += (char)dir_entry->Extension[j];
+    }
+    return _File;
 }
-
-
 
 bool FAT32::get_physical_block(uint32_t block_num, uint8_t* buffer) {
     return sd_card->read_block(block_num, buffer);
@@ -519,13 +457,14 @@ FAT_ErrorCode FAT32::file_open(const char* filename, FileFunction function) {
                     if (e->FileName[0] == FAT_Config::FILE_ERASED) continue;
 
                     // Use existing parser to assemble LFN statefully
-                    char parsed_name[FAT_Config::MAX_LFN_CHARACTERS];
-                    FileEntryType type = fat_filename_parser(e, parsed_name);
+                    FileEntryType type = fat_filename_parser(e);
                     if (type == _LongFileNameOK) {
-                        // parsed_name now holds full LFN for the next SFN entry
-                        strncpy(lfn_name, parsed_name, sizeof(lfn_name) - 1);
-                        lfn_name[sizeof(lfn_name) - 1] = '\0';
+                        // LFN handling: copy assembled buffer for comparison later
                         lfn_flag = true;
+                        strncpy(lfn_name, lfn_buffer.c_str(), sizeof(lfn_name) - 1);
+                        lfn_name[sizeof(lfn_name) - 1] = '\0';
+                        // Clear the class buffer to avoid accidental reuse
+                        lfn_buffer.clear();
                         continue;
                     } else if (type == _LongFileNameNOK) {
                         // continue collecting
@@ -1298,7 +1237,7 @@ bool FAT32::change_directory(const char* dir_name) {
                     if (e.FileName[0] == FAT_Config::FILE_CLEAR) break;
                     if (e.FileName[0] == FAT_Config::FILE_ERASED) continue;
                     if (!(e.Attributes & FAT_Config::AT_DIRECTORY)) continue;
-                    if (e.Attributes == FAT_Config::AT_LFN) continue;
+                    if ((e.Attributes & FAT_Config::AT_LFN) == FAT_Config::AT_LFN) continue;
 
                     // Construire nom 8.3 lisible
                     char dos_name[13] = {0};
@@ -1369,17 +1308,23 @@ bool FAT32::rename_file(const char* old_name, const char* new_name) {
     root_Entries* entries = (root_Entries*)read_buffer;
     const uint16_t ents = sector_size / sizeof(root_Entries);
 
-    // Ensure no collision with new name 
+    // Ensure no collision with new name (skip the source file itself)
     for (uint16_t i = 0; i < ents; ++i) {
         root_Entries &e = entries[i];
         if (e.FileName[0] == FAT_Config::FILE_CLEAR) break;
-        if (e.FileName[0] == FAT_Config::FILE_ERASED) continue;
-        if (e.Attributes == FAT_Config::AT_LFN) continue;
+                if (e.FileName[0] == FAT_Config::FILE_ERASED) continue;
+                if ((e.Attributes & FAT_Config::AT_LFN) == FAT_Config::AT_LFN) continue;
         
         // Build current entry name
         char nm[13] = {0}; int k = 0;
         for (int c = 0; c < 8 && e.FileName[c] != ' '; ++c) nm[k++] = (char)e.FileName[c];
         if (e.Extension[0] != ' ') { nm[k++] = '.'; for (int c = 0; c < 3 && e.Extension[c] != ' '; ++c) nm[k++] = (char)e.Extension[c]; }
+        
+        // Skip if this is the source file itself
+        if (FAT_Utils::iequals(nm, old_base)) {
+            continue;
+        }
+        
         // Check for conflict with other files
         if (FAT_Utils::iequals(nm, new_base)) {
             // already exists
@@ -1391,8 +1336,8 @@ bool FAT32::rename_file(const char* old_name, const char* new_name) {
     for (uint16_t i = 0; i < ents; ++i) {
         root_Entries &e = entries[i];
         if (e.FileName[0] == FAT_Config::FILE_CLEAR) break;
-        if (e.FileName[0] == FAT_Config::FILE_ERASED) continue;
-        if (e.Attributes == FAT_Config::AT_LFN) continue;
+                if (e.FileName[0] == FAT_Config::FILE_ERASED) continue;
+                if ((e.Attributes & FAT_Config::AT_LFN) == FAT_Config::AT_LFN) continue;
         char nm[13] = {0}; int k = 0;
         for (int c = 0; c < 8 && e.FileName[c] != ' '; ++c) nm[k++] = (char)e.FileName[c];
         if (e.Extension[0] != ' ') { nm[k++] = '.'; for (int c = 0; c < 3 && e.Extension[c] != ' '; ++c) nm[k++] = (char)e.Extension[c]; }
@@ -1512,7 +1457,7 @@ std::vector<std::string> FAT32::get_directory_tree() {
             for (uint16_t i = 0; i < ents; ++i) {
                 if (e[i].FileName[0] == FAT_Config::FILE_CLEAR) return list;
                 if (e[i].FileName[0] == FAT_Config::FILE_ERASED) continue;
-                if (e[i].Attributes == FAT_Config::AT_LFN) continue;
+                if ((e[i].Attributes & FAT_Config::AT_LFN) == FAT_Config::AT_LFN) continue;
                 char name[13] = {0}; int k = 0;
                 for (int c = 0; c < 8 && e[i].FileName[c] != ' '; ++c) name[k++] = (char)e[i].FileName[c];
                 if (!(e[i].Attributes & FAT_Config::AT_DIRECTORY) && e[i].Extension[0] != ' ') {
@@ -1602,7 +1547,7 @@ void FAT32::cleanup_deleted_files() {
                 for (uint16_t i = 0; i < ents; ++i) {
                     if (entries[i].FileName[0] == FAT_Config::FILE_CLEAR) break;
                     if (entries[i].FileName[0] == FAT_Config::FILE_ERASED) continue;
-                    if (entries[i].Attributes == FAT_Config::AT_LFN) continue;
+                    if ((entries[i].Attributes & FAT_Config::AT_LFN) == FAT_Config::AT_LFN) continue;
                     
                     // Check for subdirectory (but skip . and ..)
                     if (entries[i].Attributes & FAT_Config::AT_DIRECTORY) {
@@ -1672,7 +1617,7 @@ void print_file_attributes(uint8_t attributes) {
     if (attributes & FAT_Config::AT_VOLUME_ID) printf("V");
     if (attributes & FAT_Config::AT_DIRECTORY) printf("D");
     if (attributes & FAT_Config::AT_ARCHIVE) printf("A");
-    if (attributes == FAT_Config::AT_LFN) printf("LFN");
+    if ((attributes & FAT_Config::AT_LFN) == FAT_Config::AT_LFN) printf("LFN");
     printf(" (0x%02X)\n", attributes);
 }
 

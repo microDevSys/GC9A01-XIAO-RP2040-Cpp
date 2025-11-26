@@ -8,7 +8,7 @@
 /*******************************************************
  * Nom du fichier : AnimationPlayer.cpp
  * Auteur         : Guillaume Sahuc
- * Date           : 13 novembre 2025
+ * Date           : 26 novembre 2025
  * Description    : implémentation d'affichage suscessif de fichier raw (16bits color)
  *******************************************************/
 
@@ -427,52 +427,6 @@ void AnimationPlayer::check_memory_usage() const {
     printf("Chemins stockés: %zu (~%zu bytes)\n", total_paths, estimated_paths_memory);
     printf("Frames en RAM: %zu (~%zu bytes)\n", total_frames, estimated_frames_memory);
     printf("============================\n");
-}
-
-bool AnimationPlayer::load_animation_safe(const char* directory_path, const char* name, size_t max_files) {
-    if (!directory_path || max_files == 0) {
-        return false;
-    }
-    
-    printf("Chargement sécurisé: max %zu fichiers depuis %s\n", max_files, directory_path);
-    
-    Animation* anim = new Animation();
-    if (!anim) return false;
-    
-    anim->name = name ? name : directory_path;
-    anim->stream_from_dir_files = true;
-    anim->frame_size_bytes = TFTConfig::WIDTH * TFTConfig::HEIGHT * TFTConfig::BYTES_PER_PIXEL;
-    
-    // Réserver la mémoire à l'avance
-    anim->frame_paths.reserve(max_files);
-    
-    // Vérifier que la réservation a fonctionné
-    if (anim->frame_paths.capacity() < max_files) {
-        printf("ERREUR: Impossible de réserver mémoire pour %zu chemins\n", max_files);
-        delete anim;
-        return false;
-    }
-    
-    // Générer les chemins sans lister le répertoire complet
-    size_t loaded_count = 0;
-    for (size_t i = 0; i < max_files && loaded_count < max_files; i++) {
-        char filename[32];
-        snprintf(filename, sizeof(filename), "FR_%03zu.RAW", i);
-        
-        std::string full_path = std::string(directory_path) + "/" + filename;
-        anim->frame_paths.push_back(full_path);
-        loaded_count++;
-        
-        if (loaded_count % 5 == 0) {
-            printf("Préparé %zu fichiers...\n", loaded_count);
-        }
-    }
-    
-    anim->num_frames_stream = loaded_count;
-    animations.push_back(anim);
-    
-    printf("Animation sécurisée créée: %zu frames\n", loaded_count);
-    return true;
 }
 
 bool AnimationPlayer::load_animation_generated(const char* directory_path, const char* name, size_t frame_count) {
@@ -961,19 +915,14 @@ bool AnimationPlayer::load_animation_auto_detect(const char* directory_path, con
     printf("Fichiers détectés: %zu\n", detected_count);
     
     // Choisir la méthode de chargement en fonction du nombre de fichiers
-    const size_t MEMORY_SAFE_LIMIT = 20;      // Limite pour le mode sécurisé
     const size_t BLOCK_MODE_THRESHOLD = 50;   // Seuil pour le mode par blocs
     const size_t OPTIMAL_BLOCK_SIZE = 10;     // Taille optimale des blocs
     
     bool success = false;
     
-    if (detected_count <= MEMORY_SAFE_LIMIT) {
-        // Mode sécurisé pour les petites animations
-        printf("Mode sécurisé sélectionné (≤%zu fichiers)\n", MEMORY_SAFE_LIMIT);
-        success = load_animation_safe(directory_path, name, detected_count);
-    } else if (detected_count <= BLOCK_MODE_THRESHOLD) {
+    if (detected_count <= BLOCK_MODE_THRESHOLD) {
         // Mode ultra-économe pour les animations moyennes
-        printf("Mode ultra-économe sélectionné (%zu-%zu fichiers)\n", MEMORY_SAFE_LIMIT + 1, BLOCK_MODE_THRESHOLD);
+        printf("Mode ultra-économe sélectionné (%zu-%zu fichiers)\n", 21, BLOCK_MODE_THRESHOLD);
         success = load_animation_generated(directory_path, name, detected_count);
     } else {
         // Mode par blocs pour les très grosses animations
