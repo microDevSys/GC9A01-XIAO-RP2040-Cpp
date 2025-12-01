@@ -13,9 +13,8 @@
  *******************************************************/
 
 AnimationPlayer::AnimationPlayer(StorageManager* storage, TFT* tft) 
-    : storage_manager(storage), tft_display(tft), current_animation_index(-1), 
-      current_frame_index(0), last_frame_time(0), performance_mode(0),
-      next_frame_cache(nullptr), next_frame_cache_size(0), next_frame_cached_index(-1) {
+        : storage_manager(storage), tft_display(tft), current_animation_index(-1), 
+            current_frame_index(0), last_frame_time(0), performance_mode(2) {
 }
 
 AnimationPlayer::~AnimationPlayer() {
@@ -25,105 +24,7 @@ AnimationPlayer::~AnimationPlayer() {
     }
     animations.clear();
     
-    // Libérer le cache de frame
-    if (next_frame_cache) {
-        delete[] next_frame_cache;
-        next_frame_cache = nullptr;
-    }
-}
-
-bool AnimationPlayer::load_animation(const char* directory_path, const char* name) {
-    if (!directory_path) {
-        return false;
-    }
-
-    if (strstr(directory_path, ".raw") != nullptr) {
-        return false;
-    }
-    
-    // Limite le nombre total d'animations pour éviter les dépassements mémoire
-    const size_t MAX_ANIMATIONS = 10;
-    if (animations.size() >= MAX_ANIMATIONS) {
-        printf("Warning: Limite de %zu animations atteinte. Utilisez clear_all_animations() d'abord.\n", MAX_ANIMATIONS);
-        return false;
-    }
-    
-    printf("Chargement animation depuis: %s\n", directory_path);
-
-    Animation* anim = new Animation();
-    anim->name = name ? name : directory_path;
-
-    if (!storage_manager || !storage_manager->is_fat32_mounted()) {
-        // Frames de test
-        const uint16_t colors[] = {COLOR_16BITS_RED, COLOR_16BITS_GREEN, COLOR_16BITS_BLUE, COLOR_16BITS_YELLOW};
-        const int num_test_frames = 4;
-        for (int i = 0; i < num_test_frames; i++) {
-            AnimationFrame* frame = new AnimationFrame();
-            frame->size = TFTConfig::WIDTH * TFTConfig::HEIGHT * TFTConfig::BYTES_PER_PIXEL;
-            frame->delay_ms = 50;
-            frame->data = new uint8_t[frame->size];
-            if (!frame->data) { delete frame; delete anim; return false; }
-            uint16_t* pixels = (uint16_t*)frame->data;
-            for (int j = 0; j < TFTConfig::WIDTH * TFTConfig::HEIGHT; j++) pixels[j] = colors[i];
-            anim->frames.push_back(frame);
-        }
-        animations.push_back(anim);
-        return true;
-    }
-
-    printf("Mode génération automatique de noms de fichiers (FR_XXX.RAW)\n");
-    
-    std::vector<std::string> raw_names;
-    const size_t MAX_ANIMATION_FILES = 10; // Limite ultra-conservative
-    
-    // Générer les noms FR_000.RAW à FR_009.RAW (ou moins selon la limite)
-    for (size_t i = 0; i < MAX_ANIMATION_FILES; i++) {
-        char filename[16];
-        snprintf(filename, sizeof(filename), "FR_%03zu.RAW", i);
-        raw_names.push_back(std::string(filename));
-        printf("Ajouté: %s\n", filename);
-    }
-    
-    printf("Générés %zu noms de fichiers\n", raw_names.size());
-    
-    if (raw_names.empty()) {
-        delete anim;
-        return false;
-    }
-    // Pas besoin de trier, déjà en ordre
-
-    // Conserver les chemins complets pour lecture à la volée
-    const uint32_t frame_size = TFTConfig::WIDTH * TFTConfig::HEIGHT * TFTConfig::BYTES_PER_PIXEL;
-    anim->stream_from_dir_files = true;
-    anim->frame_size_bytes = frame_size;
-    anim->frame_paths.clear();
-    
-    // Réserver la mémoire à l'avance pour éviter les réallocations
-    anim->frame_paths.reserve(raw_names.size());
-    printf("Mémoire réservée pour %zu chemins de fichiers\n", raw_names.size());
-    
-    for (const auto& n : raw_names) {
-        std::string full_path = std::string(directory_path) + "/" + n;
-        anim->frame_paths.push_back(full_path);
-        
-        // Vérification simple de la capacité pour éviter les problèmes de mémoire
-        if (anim->frame_paths.size() > anim->frame_paths.capacity()) {
-            printf("ERREUR: Problème d'allocation mémoire pour %zu chemins\n", raw_names.size());
-            delete anim;
-            return false;
-        }
-    }
-    
-    anim->num_frames_stream = static_cast<uint32_t>(anim->frame_paths.size());
-    printf("Animation créée avec %lu frames en streaming\n", anim->num_frames_stream);
-    
-    if (anim->num_frames_stream == 0) { 
-        delete anim; 
-        return false; 
-    }
-
-    animations.push_back(anim);
-    return true;
+    // No frame cache to release (removed unused cache members)
 }
 
 // La logique DirectoryFrames est désormais directement dans load_animation
@@ -188,11 +89,11 @@ void AnimationPlayer::update() {
             } else if (anim->stream_generated_names) {
                 // Mode ultra-économe : générer le nom à la volée (optimisé)
                 if (current_frame_index >= 0 && current_frame_index < static_cast<int>(anim->num_frames_stream)) {
-                    static char full_path_buffer[256]; // Buffer statique pour éviter les allocations
-                    snprintf(full_path_buffer, sizeof(full_path_buffer), 
-                            "%s/FR_%03d.RAW", anim->base_directory.c_str(), current_frame_index);
-                    
-                    if (read_frame_from_file(full_path_buffer, anim->frame_size_bytes)) {
+                        char filename[32];
+                        snprintf(filename, sizeof(filename), "FR_%03d.RAW", current_frame_index);
+                        std::string full_path = anim->base_directory + "/" + filename;
+
+                        if (read_frame_from_file(full_path.c_str(), anim->frame_size_bytes)) {
                         tft_display->sendFrame();
                         shown = true;
                     }
@@ -224,209 +125,6 @@ void AnimationPlayer::update() {
 void AnimationPlayer::stop() {
     current_animation_index = -1;
     current_frame_index = 0;
-}
-
-void AnimationPlayer::pause() {
-    // Pour pauser, on peut juste arrêter de mettre à jour last_frame_time
-    // L'implémentation dépend des besoins exacts
-}
-
-void AnimationPlayer::resume() {
-    last_frame_time = to_ms_since_boot(get_absolute_time());
-}
-
-void AnimationPlayer::next_animation() {
-    if (animations.empty()) return;
-    
-    int next_index = current_animation_index + 1;
-    if (next_index >= static_cast<int>(animations.size())) {
-        next_index = 0; // Boucler au début
-    }
-    play_animation(next_index);
-}
-
-void AnimationPlayer::previous_animation() {
-    if (animations.empty()) return;
-    
-    int prev_index = current_animation_index - 1;
-    if (prev_index < 0) {
-        prev_index = static_cast<int>(animations.size()) - 1; // Aller à la fin
-    }
-    play_animation(prev_index);
-}
-
-void AnimationPlayer::next_frame() {
-    if (current_animation_index < 0 || current_animation_index >= static_cast<int>(animations.size())) {
-        return;
-    }
-    
-    Animation* anim = animations[current_animation_index];
-    current_frame_index++;
-    if (current_frame_index >= static_cast<int>(anim->frames.size())) {
-        current_frame_index = 0;
-    }
-    last_frame_time = to_ms_since_boot(get_absolute_time());
-}
-
-void AnimationPlayer::previous_frame() {
-    if (current_animation_index < 0 || current_animation_index >= static_cast<int>(animations.size())) {
-        return;
-    }
-    
-    Animation* anim = animations[current_animation_index];
-    current_frame_index--;
-    if (current_frame_index < 0) {
-        current_frame_index = static_cast<int>(anim->frames.size()) - 1;
-    }
-    last_frame_time = to_ms_since_boot(get_absolute_time());
-}
-
-void AnimationPlayer::set_loop(bool loop_enabled) {
-    if (current_animation_index >= 0 && current_animation_index < static_cast<int>(animations.size())) {
-        animations[current_animation_index]->loop = loop_enabled;
-    }
-}
-
-void AnimationPlayer::set_frame_delay(uint16_t delay_ms) {
-    if (current_animation_index >= 0 && current_animation_index < static_cast<int>(animations.size())) {
-        Animation* anim = animations[current_animation_index];
-        for (auto frame : anim->frames) {
-            frame->delay_ms = delay_ms;
-        }
-    }
-}
-
-const char* AnimationPlayer::get_current_animation_name() const {
-    if (current_animation_index >= 0 && current_animation_index < static_cast<int>(animations.size())) {
-        return animations[current_animation_index]->name.c_str();
-    }
-    return nullptr;
-}
-
-void AnimationPlayer::list_animations() const {
-    printf("=== Animations chargées ===\n");
-    for (int i = 0; i < static_cast<int>(animations.size()); i++) {
-        const Animation* a = animations[i];
-        size_t cnt = !a->frames.empty() ? a->frames.size() : a->num_frames_stream;
-        const char* mode = a->stream_by_blocks ? "blocks" : 
-                          (a->stream_generated_names ? "generated" :
-                          (a->stream_from_dir_files ? "stream(dir)" : "mem"));
-        
-        if (a->stream_by_blocks) {
-            printf("%d: '%s' (%zu/%lu frames) [%s] bloc:%lu-%lu\n", 
-                   i, a->name.c_str(), cnt, a->total_files_available, mode,
-                   a->current_block_start, a->current_block_start + cnt - 1);
-        } else {
-            printf("%d: '%s' (%zu frames) [%s]\n", i, a->name.c_str(), cnt, mode);
-        }
-    }
-    printf("=========================\n");
-}
-
-void AnimationPlayer::clear_all_animations() {
-    printf("Nettoyage de %zu animations...\n", animations.size());
-    
-    // Arrêter la lecture en cours
-    stop();
-    
-    // Libérer toutes les animations
-    for (auto anim : animations) {
-        delete anim;
-    }
-    animations.clear();
-    
-    printf("Mémoire libérée\n");
-}
-
-void AnimationPlayer::set_performance_mode(int mode) {
-    if (mode >= 0 && mode <= 2) {
-        performance_mode = mode;
-        const char* mode_names[] = {"Normal (30fps)", "Rapide (60fps)", "Ultra (120fps)"};
-        printf("Mode de performance: %s\n", mode_names[mode]);
-    } else {
-        printf("Mode invalide. Utiliser 0=normal, 1=rapide, 2=ultra\n");
-    }
-}
-
-void AnimationPlayer::optimize_block_size_for_performance() {
-    for (auto anim : animations) {
-        if (anim->stream_by_blocks) {
-            // Ajuster la taille des blocs selon le mode de performance
-            uint32_t optimal_sizes[] = {5, 15, 25}; // Plus gros blocs = moins de transitions
-            uint32_t new_size = optimal_sizes[performance_mode];
-            
-            if (anim->block_size != new_size) {
-                anim->block_size = new_size;
-                printf("Taille de bloc optimisée: %lu pour mode %d\n", new_size, performance_mode);
-            }
-        }
-    }
-}
-
-void AnimationPlayer::measure_performance(int frames_to_measure) {
-    if (current_animation_index < 0) {
-        printf("Aucune animation en cours pour mesurer les performances\n");
-        return;
-    }
-    
-    printf("Début mesure performance sur %d frames...\n", frames_to_measure);
-    
-    uint32_t start_time = to_ms_since_boot(get_absolute_time());
-    int initial_frame = current_frame_index;
-    int frames_counted = 0;
-    
-    // Mesurer pendant frames_to_measure frames ou 5 secondes max
-    while (frames_counted < frames_to_measure) {
-        uint32_t current_time = to_ms_since_boot(get_absolute_time());
-        
-        // Timeout de sécurité
-        if (current_time - start_time > 5000) {
-            printf("Timeout atteint lors de la mesure\n");
-            break;
-        }
-        
-        int old_frame = current_frame_index;
-        update(); // Une frame
-        
-        // Compter seulement si la frame a changé
-        if (current_frame_index != old_frame) {
-            frames_counted++;
-        }
-        
-        sleep_ms(1); // Éviter la boucle infinie
-    }
-    
-    uint32_t end_time = to_ms_since_boot(get_absolute_time());
-    uint32_t elapsed_ms = end_time - start_time;
-    
-    float fps = (frames_counted * 1000.0f) / elapsed_ms;
-    
-    printf("=== RÉSULTATS PERFORMANCE ===\n");
-    printf("Frames mesurées: %d\n", frames_counted);
-    printf("Temps écoulé: %lu ms\n", elapsed_ms);
-    printf("FPS réels: %.2f\n", fps);
-    printf("Mode performance: %d\n", performance_mode);
-    printf("==============================\n");
-}
-
-void AnimationPlayer::check_memory_usage() const {
-    size_t total_paths = 0;
-    size_t total_frames = 0;
-    
-    for (const auto* anim : animations) {
-        total_paths += anim->frame_paths.size();
-        total_frames += anim->frames.size();
-    }
-    
-    // Estimation approximative de l'usage mémoire
-    size_t estimated_paths_memory = total_paths * 50; // ~50 bytes par chemin en moyenne
-    size_t estimated_frames_memory = total_frames * (240 * 240 * 2); // Si frames en RAM
-    
-    printf("=== Usage Mémoire Estimé ===\n");
-    printf("Animations: %zu\n", animations.size());
-    printf("Chemins stockés: %zu (~%zu bytes)\n", total_paths, estimated_paths_memory);
-    printf("Frames en RAM: %zu (~%zu bytes)\n", total_frames, estimated_frames_memory);
-    printf("============================\n");
 }
 
 bool AnimationPlayer::load_animation_generated(const char* directory_path, const char* name, size_t frame_count) {
@@ -665,13 +363,15 @@ bool AnimationPlayer::read_frame_from_file(const char* full_path, uint32_t frame
             return false;
         }
         
-        uint16_t* line_buffer = new uint16_t[width]; // Buffer pour une ligne complète de l'image source
-        if (!line_buffer) {
-            printf("Erreur: Impossible d'allouer %d bytes pour line_buffer\n", width * 2);
+        // Utilisation d'un buffer statique réutilisable pour limiter les allocations
+        static uint16_t static_line_buffer[1024];
+        if (width > (int)(sizeof(static_line_buffer) / sizeof(static_line_buffer[0]))) {
+            printf("Erreur: Image trop large (%d pixels > %zu)\n", width, sizeof(static_line_buffer) / sizeof(static_line_buffer[0]));
             fs->file_close();
             fs->change_directory("/");
             return false;
         }
+        uint16_t* line_buffer = static_line_buffer;
         
         uint32_t remaining_in_tmp = chunk_size;
         uint32_t tmp_offset = 0;
@@ -724,7 +424,7 @@ bool AnimationPlayer::read_frame_from_file(const char* full_path, uint32_t frame
             }
         }
         
-        delete[] line_buffer;
+        // Aucun delete nécessaire - buffer statique réutilisé
     }
     
     fs->file_close();
@@ -810,23 +510,7 @@ void AnimationPlayer::update_block_animation(Animation* anim) {
     }
 }
 
-bool AnimationPlayer::load_image_at_position(const char* file_path, int offset_x, int offset_y) {
-    if (!file_path || !tft_display) {
-        return false;
-    }
-    
-    // Utiliser une taille de frame par défaut (sera ignorée avec la nouvelle logique basée sur l'entête)
-    uint32_t dummy_frame_size = TFTConfig::WIDTH * TFTConfig::HEIGHT * TFTConfig::BYTES_PER_PIXEL;
-    
-    // Lire et afficher l'image à la position spécifiée
-    if (read_frame_from_file(file_path, dummy_frame_size, offset_x, offset_y)) {
-        // Envoyer le framebuffer à l'écran
-        tft_display->sendFrame();
-        return true;
-    }
-    
-    return false;
-}
+ 
 
 size_t AnimationPlayer::detect_animation_files_count(const char* directory_path) {
     if (!directory_path || !storage_manager || !storage_manager->is_fat32_mounted()) {
@@ -876,7 +560,7 @@ size_t AnimationPlayer::detect_animation_files_count(const char* directory_path)
             
             if (valid_pattern) {
                 animation_files_count++;
-                if (animation_files_count <= 10) { // Afficher les 10 premiers pour debug
+                if (animation_files_count <= 20) { // Afficher les 20 premiers pour debug
                     printf("  Trouvé: %s\n", file.name);
                 }
             }
@@ -887,8 +571,8 @@ size_t AnimationPlayer::detect_animation_files_count(const char* directory_path)
     printf("Fichiers totaux: %zu\n", total_files);
     printf("Fichiers d'animation (FR_XXX.RAW): %zu\n", animation_files_count);
     
-    if (animation_files_count > 10) {
-        printf("  (et %zu autres...)\n", animation_files_count - 10);
+    if (animation_files_count > 20) {
+        printf("  (et %zu autres...)\n", animation_files_count - 20);
     }
     
     printf("========================\n");
@@ -916,7 +600,7 @@ bool AnimationPlayer::load_animation_auto_detect(const char* directory_path, con
     
     // Choisir la méthode de chargement en fonction du nombre de fichiers
     const size_t BLOCK_MODE_THRESHOLD = 50;   // Seuil pour le mode par blocs
-    const size_t OPTIMAL_BLOCK_SIZE = 10;     // Taille optimale des blocs
+    const size_t OPTIMAL_BLOCK_SIZE = 20;     // Taille optimale des blocs
     
     bool success = false;
     

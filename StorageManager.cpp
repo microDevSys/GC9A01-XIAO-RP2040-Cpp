@@ -6,12 +6,29 @@
 #include "lib_bmp.h"
 #include "Color.h"
 
+
+
 /*******************************************************
  * Nom du fichier : StorageManager.cpp
  * Auteur         : Guillaume Sahuc
- * Date           : 26 novembre 2025
+ * Date           : 01 Decembre 2025
  * Description    : driver haut niveau FAT32
  *******************************************************/
+
+
+// Helper to format FAT date/time used in advanced listing
+static std::string storage_format_fat_datetime(uint16_t date, uint16_t time) {
+    if (date == 0 && time == 0) return std::string("----/--/-- --:--:--");
+    uint16_t day = date & 0x1F;
+    uint16_t month = (date >> 5) & 0x0F;
+    uint16_t year = ((date >> 9) & 0x7F) + 1980;
+    uint16_t seconds = (time & 0x1F) * 2;
+    uint16_t minutes = (time >> 5) & 0x3F;
+    uint16_t hours = (time >> 11) & 0x1F;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%04u/%02u/%02u %02u:%02u:%02u", (unsigned)year, (unsigned)month, (unsigned)day, (unsigned)hours, (unsigned)minutes, (unsigned)seconds);
+    return std::string(buf);
+}
 
 // ============================================================================
 // CONSTRUCTEUR & DESTRUCTEUR
@@ -664,7 +681,7 @@ SDCard_Status StorageManager::list_directory_advanced() {
                   printf("Type:     Fichier\n");
                   printf("Taille:   %lu bytes (%.2f KB)\n", entry.size, (float)entry.size / 1024.0f);
                   printf("Attributs: %s  Cluster: %lu\n", attr_buf, (unsigned long)entry.firstCluster);
-                  printf("Modifié:  %s\n", format_fat_datetime(entry.modificationDate, entry.modificationTime).c_str());
+                  printf("Modifié:  %s\n", storage_format_fat_datetime(entry.modificationDate, entry.modificationTime).c_str());
                 file_count++;
                 total_size += entry.size;
                 break;
@@ -672,7 +689,7 @@ SDCard_Status StorageManager::list_directory_advanced() {
             case _Directory:
                 printf("Type:     Répertoire\n");
                 printf("Attributs: %s  Cluster: %lu\n", attr_buf, (unsigned long)entry.firstCluster);
-                printf("Modifié:  %s\n", format_fat_datetime(entry.modificationDate, entry.modificationTime).c_str());
+                printf("Modifié:  %s\n", storage_format_fat_datetime(entry.modificationDate, entry.modificationTime).c_str());
                 dir_count++;
                 break;
                 

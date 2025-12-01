@@ -51,7 +51,6 @@ add_executable(main
 target_link_libraries(main 
     pico_stdlib 
     hardware_spi 
-    hardware_dma 
     hardware_irq 
     hardware_gpio
     hardware_uart

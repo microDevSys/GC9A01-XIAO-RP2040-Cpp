@@ -12,7 +12,7 @@ struct AnimationFrame {
     uint32_t size;      // Taille des données
     uint16_t delay_ms;  // Délai avant la frame suivante
     
-    AnimationFrame() : data(nullptr), size(0), delay_ms(100) {}
+    AnimationFrame() : data(nullptr), size(0), delay_ms(25) {}
     ~AnimationFrame() {
         if (data) {
             delete[] data;
@@ -44,7 +44,7 @@ struct Animation {
     Animation() : loop(true), stream_from_dir_files(false),
                   num_frames_stream(0), frame_size_bytes(0),
                   stream_generated_names(false), stream_by_blocks(false),
-                  total_files_available(0), current_block_start(0), block_size(10) {}
+                  total_files_available(0), current_block_start(0), block_size(20) {}
     ~Animation() {
         for (auto frame : frames) {
             delete frame;
@@ -64,14 +64,8 @@ private:
     uint32_t last_frame_time;
     int performance_mode; // 0=normal(33ms), 1=rapide(16ms), 2=ultra(8ms)
     
-    // Cache pour optimisation
-    uint8_t* next_frame_cache;          // Cache pour la frame suivante
-    uint32_t next_frame_cache_size;     // Taille du cache
-    int next_frame_cached_index;        // Index de la frame mise en cache
-
     // Fonctions privées
     bool read_frame_from_file(const char* full_path, uint32_t frame_size, int offset_x = 0, int offset_y = 0);
-    void check_memory_usage() const;
     bool load_next_block(Animation* anim);      // Charge le bloc suivant
     void update_block_animation(Animation* anim); // Met à jour l'animation par blocs
     
@@ -81,47 +75,23 @@ public:
     
     // Gestion des animations
     // Charge une animation depuis un répertoire contenant des fichiers .raw triés (DirectoryFrames)
-    bool load_animation(const char* directory_path, const char* name = nullptr);
     // Version ultra-économe : génère les noms à la volée (0 allocation de chemins)
     bool load_animation_generated(const char* directory_path, const char* name, size_t frame_count);
     // Version par blocs : charge l'animation complète par blocs séquentiels
-    bool load_animation_by_blocks(const char* directory_path, const char* name, size_t total_files, size_t block_size = 10);
+    bool load_animation_by_blocks(const char* directory_path, const char* name, size_t total_files, size_t block_size = 20);
     
     // Contrôle de lecture
     bool play_animation(int animation_index);
     bool play_animation(const char* animation_name);
     void update(); // À appeler dans la boucle principale
     void stop();
-    void pause();
-    void resume();
-    
-    // Navigation
-    void next_animation();
-    void previous_animation();
-    void next_frame();
-    void previous_frame();
-    
-    // Configuration
-    void set_loop(bool loop_enabled);
-    void set_frame_delay(uint16_t delay_ms);
-    void set_performance_mode(int mode); // 0=normal, 1=rapide, 2=ultra-rapide
-    void optimize_block_size_for_performance(); // Ajuste la taille des blocs automatiquement
-    void measure_performance(int frames_to_measure = 100); // Mesure les FPS réels
     
     // Informations
     int get_animation_count() const { return animations.size(); }
     int get_current_animation_index() const { return current_animation_index; }
     int get_current_frame_index() const { return current_frame_index; }
-    const char* get_current_animation_name() const;
-    
-    // Utilitaires
-    void list_animations() const;
-    void clear_all_animations(); // Nettoie toutes les animations chargées
     
     // Détection automatique du nombre de blocs/fichiers
     size_t detect_animation_files_count(const char* directory_path); // Compte les fichiers FR_XXX.RAW
     bool load_animation_auto_detect(const char* directory_path, const char* name = nullptr); // Détecte automatiquement et charge
-    
-    // Chargement d'image avec offset
-    bool load_image_at_position(const char* file_path, int offset_x, int offset_y);
 };

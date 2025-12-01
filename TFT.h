@@ -2,22 +2,21 @@
 
 /**
  * @file TFT.h
- * @brief Driver pour écran TFT avec support DMA, polices et primitives graphiques
+ * @brief Driver pour écran TFT avec polices et primitives graphiques
  * @author Guillaume Sahuc
  * @date 2025
  * 
  * @class TFT
- * @brief Gestionnaire d'écran TFT avec framebuffer, DMA et support multi-polices
+ * @brief Gestionnaire d'écran TFT avec framebuffer et support multi-polices
  *
  * Cette classe fournit une interface complète pour :
  * - Initialisation et communication SPI avec l'écran
- * - Gestion du framebuffer et transferts DMA
+ * - Gestion du framebuffer et transferts SPI (bloquant)
  * - Primitives de dessin (lignes, rectangles, cercles)
  * - Rendu de texte avec plusieurs polices (Mini, Standard, Arial32)
  * - Gestion de la rotation d'écran et du scroll
  * - Support des animations (balles, marqueurs horaires)
  *
- * @note Utilise un pattern singleton pour la gestion des interruptions DMA
  */
 
 #include <cstdint>
@@ -60,7 +59,7 @@ public:
 
     // ===== INITIALISATION =====
     /**
-     * @brief Initialise l'écran TFT (GPIO, SPI, DMA, LCD)
+    * @brief Initialise l'écran TFT (GPIO, SPI, LCD)
      */
     void init();
 
@@ -91,7 +90,7 @@ public:
     void setFillColor(uint16_t color);
     
     /**
-     * @brief Envoie le framebuffer vers l'écran via DMA
+    * @brief Envoie le framebuffer vers l'écran via SPI (bloquant)
      */
     void sendFrame();
 
@@ -104,6 +103,8 @@ public:
 
     // Accès direct au framebuffer pour streaming sans buffer intermédiaire
     uint8_t* getFramebuffer() { return framebuffer; }
+    // Accès au framebuffer en 16-bit (plus efficace pour manipuler des pixels)
+    inline uint16_t* getFramebuffer16() { return reinterpret_cast<uint16_t*>(framebuffer); }
     // Taille du framebuffer (en octets)
     size_t getFramebufferSize() const;
 
@@ -137,6 +138,14 @@ public:
      * @brief Dessine un petit cercle optimisé (rayon < 10)
      */
     void drawSmallCircle(int xc, int yc, int r, uint16_t color);
+    /**
+    * @brief Envoie uniquement une région rectangulaire du framebuffer via SPI
+     * @param x x de départ
+     * @param y y de départ
+     * @param w largeur
+     * @param h hauteur
+     */
+    void sendRegion(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 
     // ===== GESTION DES POLICES =====
     /**
@@ -262,12 +271,7 @@ private:
     // Framebuffer et affichage
     uint8_t* framebuffer;           ///< Buffer d'image en mémoire
     uint16_t fill_color;            ///< Couleur de remplissage par défaut
-    
-    // DMA et communication
-    int dma_chan;                   ///< Canal DMA utilisé
-    int dma_irq;                    ///< IRQ DMA
-    volatile bool dma_busy;         ///< État du transfert DMA
-    
+   
     // Scroll et transformation
     int scroll_x, scroll_y;         ///< Décalages de scroll actuels
     Rotation current_rotation;      ///< Rotation courante de l'écran
@@ -276,8 +280,7 @@ private:
     // Police courante
     FontType current_font;          ///< Type de police actuellement sélectionnée
     
-    // Singleton pour DMA
-    static TFT* instance;           ///< Instance unique pour les callbacks DMA
+    // Singleton instance not required (no DMA callbacks)
     
     // ===== MÉTHODES PRIVÉES =====
     
@@ -285,7 +288,7 @@ private:
     void initGPIO();                ///< Configuration des GPIO
     void initSPI();                 ///< Configuration du SPI
     void initFramebuffer();         ///< Allocation du framebuffer
-    void initDMA();                 ///< Configuration du DMA
+    // DMA no longer used. Send frame implemented using blocking SPI.
     void initSequence();            ///< Séquence d'initialisation LCD
     
     // Communication SPI
@@ -294,9 +297,7 @@ private:
     void cmdWithData(const uint8_t cmd, const uint8_t* data, size_t datalen);
     void setWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
     
-    // Gestion DMA
-    static void dma_irq_handler_wrapper(); ///< Wrapper statique pour IRQ DMA
-    void dmaHandler();              ///< Gestionnaire d'interruption DMA
+    // (DMA removed) IRQ/Handler removed
     
     // Polices - Méthodes génériques
     const uint8_t* getFontData(char c);     ///< Données bitmap d'un caractère

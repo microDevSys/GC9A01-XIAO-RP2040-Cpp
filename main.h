@@ -7,7 +7,6 @@
 #include <ctime>
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
-#include "hardware/dma.h"
 #include "hardware/irq.h"
 #include "hardware/gpio.h"
 #include "hardware/clocks.h"
@@ -35,7 +34,7 @@ struct TFTConfig {
     static constexpr int HEIGHT           = 240;
     static constexpr int BYTES_PER_PIXEL  = 2;
     static constexpr int FB_SIZE_BYTES    = WIDTH * HEIGHT * BYTES_PER_PIXEL;
-    static constexpr int SPI_BAUDRATE     = 40000000; // 40 MHz
+    static constexpr int SPI_BAUDRATE     = 62000000; // 62 MHz
 };
 
 struct DHT11Config {

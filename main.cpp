@@ -48,8 +48,8 @@ static void wait_for_usb(uint32_t timeout_ms = 4000) {
 }
 
 // Buffer pour les commandes série
-static char cmd_buffer[256];
-static uint8_t cmd_index = 0;
+static std::string cmd_buffer;
+static std::string::size_type cmd_index = 0;
 
 // Fonction pour afficher le menu d'aide
 void print_help() {
@@ -70,15 +70,37 @@ void print_help() {
     printf("=============================\n");
 }
 
+// Helpers pour formattage FAT attributes/date
+static std::string format_attr_from_fat(uint8_t attr) {
+    char buf[8] = "-------"; // R H S V D A -
+    if (attr & FAT_Config::AT_READONLY) buf[0] = 'R';
+    if (attr & FAT_Config::AT_HIDDEN)   buf[1] = 'H';
+    if (attr & FAT_Config::AT_SYSTEM)   buf[2] = 'S';
+    if (attr & FAT_Config::AT_VOLUME_ID)buf[3] = 'V';
+    if (attr & FAT_Config::AT_DIRECTORY) buf[4] = 'D';
+    if (attr & FAT_Config::AT_ARCHIVE)   buf[5] = 'A';
+    return std::string(buf);
+}
+
+static std::string format_fat_datetime_from_fields(uint16_t date, uint16_t time) {
+    if (date == 0 && time == 0) return std::string("----/--/-- --:--");
+    uint16_t day = date & 0x1F;
+    uint16_t month = (date >> 5) & 0x0F;
+    uint16_t year = ((date >> 9) & 0x7F) + 1980;
+    uint16_t minutes = (time >> 5) & 0x3F;
+    uint16_t hours = (time >> 11) & 0x1F;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%04u/%02u/%02u %02u:%02u", (unsigned)year, (unsigned)month, (unsigned)day, (unsigned)hours, (unsigned)minutes);
+    return std::string(buf);
+}
+
 // Fonction pour traiter les commandes
 void process_command(const char* cmd, StorageManager* storage) {
     // Copie pour tokenisation
-    char cmd_copy[256];
-    strncpy(cmd_copy, cmd, sizeof(cmd_copy) - 1);
-    cmd_copy[sizeof(cmd_copy) - 1] = '\0';
+    std::string cmd_copy(cmd);
     
     // Extraire la commande principale
-    char* token = strtok(cmd_copy, " ");
+    char* token = strtok(&cmd_copy[0], " ");
     if (!token) return;
     
     // Convertir en minuscules
@@ -109,31 +131,10 @@ void process_command(const char* cmd, StorageManager* storage) {
                     clean_name.pop_back();
                 }
                 // Attributes and datetime formatter
-                auto format_attr = [](uint8_t attr)->std::string {
-                    char buf[8] = "-------"; // R H S V D A -
-                    if (attr & FAT_Config::AT_READONLY) buf[0] = 'R';
-                    if (attr & FAT_Config::AT_HIDDEN)   buf[1] = 'H';
-                    if (attr & FAT_Config::AT_SYSTEM)   buf[2] = 'S';
-                    if (attr & FAT_Config::AT_VOLUME_ID)buf[3] = 'V';
-                    if (attr & FAT_Config::AT_DIRECTORY) buf[4] = 'D';
-                    if (attr & FAT_Config::AT_ARCHIVE)   buf[5] = 'A';
-                    return std::string(buf);
-                };
+                // Use static helper functions to minimize lambda allocations
 
-                auto format_fat_datetime = [](uint16_t date, uint16_t time) -> std::string {
-                    if (date == 0 && time == 0) return std::string("----/--/-- --:--");
-                    uint16_t day = date & 0x1F;
-                    uint16_t month = (date >> 5) & 0x0F;
-                    uint16_t year = ((date >> 9) & 0x7F) + 1980;
-                    uint16_t minutes = (time >> 5) & 0x3F;
-                    uint16_t hours = (time >> 11) & 0x1F;
-                    char buf[32];
-                    snprintf(buf, sizeof(buf), "%04u/%02u/%02u %02u:%02u", (unsigned)year, (unsigned)month, (unsigned)day, (unsigned)hours, (unsigned)minutes);
-                    return std::string(buf);
-                };
-
-                const std::string attr_s = format_attr(file.attributes);
-                const std::string dt_s = format_fat_datetime(file.modificationDate, file.modificationTime);
+                const std::string attr_s = format_attr_from_fat(file.attributes);
+                const std::string dt_s = format_fat_datetime_from_fields(file.modificationDate, file.modificationTime);
 
                 if (file.is_directory) {
                     printf("DIR     %-12s  %s  %s  %s\n", "-", dt_s.c_str(), attr_s.c_str(), clean_name.c_str());
@@ -401,13 +402,13 @@ void handle_serial_input(StorageManager* storage) {
     
     if (c == '\n' || c == '\r') {
         if (cmd_index > 0) {
-            cmd_buffer[cmd_index] = '\0';
             printf("\n"); // Nouvelle ligne
             
             // Traiter la commande
-            process_command(cmd_buffer, storage);
+            process_command(cmd_buffer.c_str(), storage);
             
             // Réinitialiser le buffer
+            cmd_buffer.clear();
             cmd_index = 0;
             printf("\n> "); // Prompt
         }
@@ -417,10 +418,9 @@ void handle_serial_input(StorageManager* storage) {
             printf("\b \b"); // Effacer le caractère à l'écran
         }
     } else if (c >= 32 && c < 127) { // Caractères imprimables
-        if (cmd_index < sizeof(cmd_buffer) - 1) {
-            cmd_buffer[cmd_index++] = (char)c;
-            printf("%c", c); // Echo
-        }
+        cmd_buffer += (char)c;
+        cmd_index++;
+        printf("%c", c); // Echo
     }
 }
 
@@ -459,6 +459,7 @@ int main() {
 
     printf("\n> "); // Premier prompt
     // Boucle principale
+    cmd_buffer.reserve(128);
     while (true) {
         // Gérer les entrées série
         handle_serial_input(&storage);
@@ -468,17 +469,16 @@ int main() {
             for (auto& ball : balls) {
                 // Effacer l'ancienne position
                 tft->drawFillCircle((int)ball.x, (int)ball.y, ball.radius, COLOR_16BITS_BLACK);
-                
+
                 // Mettre à jour la position
                 ball.update(TFTConfig::WIDTH, TFTConfig::HEIGHT);
-                
+
                 // Dessiner à la nouvelle position
                 tft->drawFillCircle((int)ball.x, (int)ball.y, ball.radius, ball.color);
             }
             
-            if (!balls.empty()) {
-                tft->sendFrame();
-            }
+            // Envoyer la frame complète (restauré comportement original)
+            tft->sendFrame();
         }
         
         // Mettre à jour l'animation si elle est en cours

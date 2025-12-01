@@ -5,20 +5,19 @@
 /*******************************************************
  * Nom du fichier : TFT.cpp
  * Auteur         : Guillaume Sahuc
- * Date           : 23 novembre 2025
+ * Date           : 01 Decembre 2025
  * Description    : driver GC9A01 on spi0 RP2040
+ *                : DMA removed 
  *******************************************************/
 
-// ===== VARIABLES STATIQUES =====
-TFT* TFT::instance = nullptr;
 
-// Framebuffer statique pour éviter l'allocation dynamique (heap insuffisante)
-// Aligné sur 4 octets pour de meilleures performances DMA
+// Framebuffer statique pour éviter l'allocation dynamique
+// Aligné sur 4 octets pour de meilleures performances SPI
 static uint8_t g_tft_framebuffer[TFTConfig::FB_SIZE_BYTES] __attribute__((aligned(4)));
 
 // ===== CONSTRUCTEUR/DESTRUCTEUR =====
-TFT::TFT() : framebuffer(nullptr), dma_chan(-1), dma_irq(0), 
-             dma_busy(false), fill_color(0x0000), scroll_x(0), scroll_y(0),
+TFT::TFT() : framebuffer(nullptr), 
+             fill_color(0x0000), scroll_x(0), scroll_y(0),
              current_font(FontType::FONT_STANDARD), current_rotation(Rotation::PORTRAIT_0) {
     updateScreenDimensions();
 }
@@ -34,7 +33,7 @@ size_t TFT::getFramebufferSize() const {
 
 // ===== INITIALISATION =====
 void TFT::init() {
-    instance = this;
+    // no DMA; no instance assigned
     
     // Configuration GPIO
     initGPIO();
@@ -44,9 +43,6 @@ void TFT::init() {
     
     // Allocation du framebuffer
     initFramebuffer();
-    
-    // Configuration DMA
-    initDMA();
     
     // Séquence d'initialisation LCD
     initSequence();
@@ -74,16 +70,13 @@ void TFT::initSPI() {
 void TFT::initFramebuffer() {
     framebuffer = g_tft_framebuffer;
     // Clear initial
-    for (int i = 0; i < TFTConfig::FB_SIZE_BYTES; ++i) framebuffer[i] = 0;
+    // Prefer 16-bit writes for speed (RGB565 buffer)
+    uint16_t* fb16 = reinterpret_cast<uint16_t*>(framebuffer);
+    size_t nb_words = TFTConfig::FB_SIZE_BYTES / 2;
+    for (size_t i = 0; i < nb_words; ++i) fb16[i] = 0;
 }
 
-void TFT::initDMA() {
-    dma_chan = dma_claim_unused_channel(true);
-    dma_irq = dma_chan;
-    irq_set_exclusive_handler(DMA_IRQ_0, TFT::dma_irq_handler_wrapper);
-    irq_set_enabled(DMA_IRQ_0, true);
-    dma_channel_set_irq0_enabled(dma_chan, true);
-}
+// DMA removed. No initDMA implementation.
 
 // ===== COMMUNICATION SPI =====
 void TFT::writeCmd(const uint8_t* cmd, size_t len) {
@@ -127,19 +120,9 @@ void TFT::setWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
     cmdWithData(0x2B, buf, 4);
 }
 
-// ===== GESTION DMA =====
-void TFT::dma_irq_handler_wrapper() {
-    if (instance) instance->dmaHandler();
-}
-
-void TFT::dmaHandler() {
-    dma_hw->ints0 = 1u << dma_chan;
-    dma_busy = false;
-}
+// ===== TRANSPORT SPI =====
 
 void TFT::sendFrame() {
-    if (!framebuffer) return;
-    
     // S'assurer que le bus SPI est à pleine vitesse pour le transfert d'image
     spi_set_baudrate(spi0, TFTConfig::SPI_BAUDRATE);
 
@@ -149,35 +132,53 @@ void TFT::sendFrame() {
     
     gpio_put(TFTConfig::PIN_DC, 1);
     gpio_put(TFTConfig::PIN_CS, 0);
-
-    dma_channel_config c = dma_channel_get_default_config(dma_chan);
-    channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
-    channel_config_set_dreq(&c, DREQ_SPI0_TX);
-    channel_config_set_read_increment(&c, true);
-    channel_config_set_write_increment(&c, false);
-
-    dma_channel_configure(dma_chan, &c, &spi_get_hw(spi0)->dr, 
-                         framebuffer, TFTConfig::FB_SIZE_BYTES, true);
-
-    dma_busy = true;
-    dma_channel_wait_for_finish_blocking(dma_chan);
-    dma_busy = false;
-
+    // Use blocking SPI transfer for the whole framebuffer instead of DMA
+    spi_write_blocking(spi0, framebuffer, TFTConfig::FB_SIZE_BYTES);
     gpio_put(TFTConfig::PIN_CS, 1);
+}
+
+void TFT::sendRegion(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    // Validate region
+    if (w == 0 || h == 0) return;
+    if (x >= (uint16_t)screen_width || y >= (uint16_t)screen_height) return;
+    uint16_t x1 = (x + w > (uint16_t)screen_width) ? (screen_width - 1) : (x + w - 1);
+    uint16_t y1 = (y + h > (uint16_t)screen_height) ? (screen_height - 1) : (y + h - 1);
+
+    // For each line we do a blocking SPI transfer of contiguous memory
+    // This avoids copying the whole framebuffer when only a small region changed
+    for (uint16_t row = y; row <= y1; ++row) {
+        setWindow(x, row, x1, row);
+        uint8_t cmd = 0x2C;
+        writeCmd(&cmd, 1);
+        gpio_put(TFTConfig::PIN_DC, 1);
+        gpio_put(TFTConfig::PIN_CS, 0);
+
+        // Calculate byte offset and bytes to transfer
+        uint16_t* fb16 = reinterpret_cast<uint16_t*>(framebuffer);
+        uint32_t offset = (static_cast<uint32_t>(row) * screen_width + x);
+        uint8_t* row_ptr = reinterpret_cast<uint8_t*>(&fb16[offset]);
+        size_t bytes = (x1 - x + 1) * 2;
+
+        // For small transfers we use blocking spi write
+        spi_write_blocking(spi0, row_ptr, bytes);
+        gpio_put(TFTConfig::PIN_CS, 1);
+    }
 }
 
 void TFT::blitRGB565FullFrame(const uint8_t* src) {
     if (!framebuffer || !src) return;
+    // copy raw frame bytes as-is. Caller must provide data in the expected byte order
     std::memcpy(framebuffer, src, TFTConfig::FB_SIZE_BYTES);
 }
 
 // ===== GESTION DU FRAMEBUFFER =====
 void TFT::fill(uint16_t color) {
     fill_color = color;
-    for (int i = 0; i < TFTConfig::FB_SIZE_BYTES; i += 2) {
-        framebuffer[i] = (color >> 8) & 0xFF;
-        framebuffer[i+1] = color & 0xFF;
-    }
+    uint16_t* fb16 = reinterpret_cast<uint16_t*>(framebuffer);
+    size_t nb_words = TFTConfig::FB_SIZE_BYTES / 2;
+    // Store as big-endian 16-bit words in memory so the SPI transfer expects MSB first
+    uint16_t be_color = (uint16_t)((color >> 8) | (color << 8));
+    for (size_t i = 0; i < nb_words; ++i) fb16[i] = be_color;
 }
 
 void TFT::clear() {
@@ -196,9 +197,9 @@ void TFT::setPixel(int x, int y, uint16_t color) {
     if (screen_x < 0 || screen_x >= screen_width || 
         screen_y < 0 || screen_y >= screen_height) return;
     
-    int pos = (screen_y * screen_width + screen_x) * 2;
-    framebuffer[pos] = (color >> 8) & 0xFF;
-    framebuffer[pos + 1] = color & 0xFF;
+    uint16_t* fb16 = reinterpret_cast<uint16_t*>(framebuffer);
+    uint16_t be_color = (uint16_t)((color >> 8) | (color << 8));
+    fb16[screen_y * screen_width + screen_x] = be_color;
 }
 
 void TFT::setFillColor(uint16_t color) {
@@ -296,18 +297,26 @@ void TFT::drawFillCircle(int xc, int yc, int r, uint16_t color) {
 }
 
 void TFT::drawSmallCircle(int xc, int yc, int r, uint16_t color) {
-    for (int y = -r; y <= r; y++) {
-        for (int x = -r; x <= r; x++) {
-            if (x*x + y*y <= r*r) {
-                int px = xc + x;
-                int py = yc + y;
-                // Le framebuffer est toujours WIDTH x HEIGHT (320x480) physique
-                if (px >= 0 && px < TFTConfig::WIDTH && 
-                    py >= 0 && py < TFTConfig::HEIGHT) {
-                    int pos = (py * TFTConfig::WIDTH + px) * 2;
-                    framebuffer[pos] = (color >> 8) & 0xFF;
-                    framebuffer[pos + 1] = color & 0xFF;
-                }
+    uint16_t* fb16 = reinterpret_cast<uint16_t*>(framebuffer);
+    uint16_t be_color = (uint16_t)((color >> 8) | (color << 8));
+    int miny = yc - r;
+    int maxy = yc + r;
+    int minx = xc - r;
+    int maxx = xc + r;
+
+    // Clip to screen
+    if (minx < 0) minx = 0;
+    if (miny < 0) miny = 0;
+    if (maxx >= TFTConfig::WIDTH) maxx = TFTConfig::WIDTH - 1;
+    if (maxy >= TFTConfig::HEIGHT) maxy = TFTConfig::HEIGHT - 1;
+
+    for (int py = miny; py <= maxy; ++py) {
+        int dy = py - yc;
+        int dy2 = dy * dy;
+        for (int px = minx; px <= maxx; ++px) {
+            int dx = px - xc;
+            if ((dx*dx + dy2) <= r * r) {
+                fb16[py * TFTConfig::WIDTH + px] = be_color;
             }
         }
     }
